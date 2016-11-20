@@ -8,14 +8,25 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	//"github.com/aws/aws-sdk-go/service/sns"
+	"io/ioutil"
+	"os"
+	"os/exec"
+	"os/signal"
+	"syscall"
+	"text/template"
+	"time"
 )
 
 type config struct {
-	ASGName   string
-	Region    string
-	LogLevel  string
-	LogFormat string
+	ASGName      string
+	Region       string
+	LogLevel     string
+	LogFormat    string
+	OutputFile   string
+	Template     string
+	SSLCert      string
+	PollInterval int
+	Systemd      bool
 }
 
 var conf config
@@ -25,6 +36,11 @@ func init() {
 	flag.StringVar(&conf.Region, "region", "us-west-2", "The region name")
 	flag.StringVar(&conf.LogLevel, "log-level", "info", "Levels: panic|fatal|error|warn|info|debug")
 	flag.StringVar(&conf.LogFormat, "log-format", "plain", "Supports json or plain")
+	flag.StringVar(&conf.OutputFile, "output", "/etc/haproxy/haproxy.cfg", "The HAProxy config file to write")
+	flag.StringVar(&conf.Template, "template", "haproxy.cfg.tmpl", "The HAProxy template file")
+	flag.StringVar(&conf.SSLCert, "ssl-cert", "/etc/letsencrypt/live/example.com.crt", "The SSL Cert + Key file for haproxy")
+	flag.IntVar(&conf.PollInterval, "poll-interval", 150, "Query AWS API after this many seconds")
+	flag.BoolVar(&conf.Systemd, "systemd", false, "Restart using systemd")
 	flag.Parse()
 
 	switch conf.LogLevel {
@@ -48,7 +64,6 @@ func init() {
 }
 
 func main() {
-
 	sess, err := session.NewSession()
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -60,23 +75,85 @@ func main() {
 	as := autoscaling.New(sess)
 	ec2client := ec2.New(sess)
 
-	instanceIDs := GetASGInstanceIDs(conf.ASGName, as)
-	params := &ec2.DescribeInstancesInput{
-		InstanceIds: instanceIDs,
-	}
-
-	instances, err := ec2client.DescribeInstances(params)
+	// Initialize the Template
+	templateContents, err := ioutil.ReadFile(conf.Template)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
-		}).Fatal("Failed to describe instances")
+		}).Fatal("Unable to read template file")
 	}
-	fmt.Println(instances)
+
+	tmpl, err := template.New("haproxy").Parse(string(templateContents))
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err,
+		}).Fatal("Error parsing template!")
+	}
+
+	// Create the channels
+	LoopTimer := time.Tick(time.Duration(conf.PollInterval) * time.Second)
+	ControlChannel := make(chan os.Signal, 2)
+	signal.Notify(ControlChannel, os.Interrupt, syscall.SIGTERM)
+	oldInstances := make([]string, 0)
+
+	// Start the loop
+	for {
+		select {
+		// Exit if we receive something on teh control channel
+		case <-ControlChannel:
+			return
+		case <-LoopTimer:
+			instanceIDs, err := GetASGInstanceIDs(conf.ASGName, as)
+			if err != nil {
+				log.WithFields(log.Fields{
+					"error": err,
+				}).Fatal("Failed to describe instances")
+			}
+
+			if len(instanceIDs) == 0 {
+				log.WithFields(log.Fields{
+					"asg-name": conf.ASGName,
+				}).Warn("Empty list of instances from ASG!")
+			} else {
+				instances, err := GetInstances(ec2client, instanceIDs)
+				if err != nil {
+					log.WithFields(log.Fields{
+						"error": err,
+					}).Fatal("Failed to describe instances")
+				}
+
+				// Create template data structure
+				td := NewTemplateDataFromEC2Response(conf.ASGName, conf.SSLCert, instances)
+
+				// Write out template
+				if SliceEqual(td.InstanceIDs(), oldInstances) {
+					log.Info("No changes found in instances, doing nothing")
+				} else {
+					err = td.Write(tmpl, conf.OutputFile)
+					if err != nil {
+						log.WithFields(log.Fields{
+							"error": err,
+						}).Fatal("Unable to write output file")
+					}
+
+					// Restart Haproxy
+					err = RestartHAProxy(conf.Systemd)
+					if err != nil {
+						log.WithFields(log.Fields{
+							"error": err,
+						}).Fatal("Unable to restart haproxy")
+					}
+					oldInstances = td.InstanceIDs()
+				}
+			}
+		default:
+		}
+	}
 }
 
 // GetASGInstanceIDs queries the AutoScalingGroup for the instances
 // returning only the Instance IDs
-func GetASGInstanceIDs(asgName string, as *autoscaling.AutoScaling) (ids []*string) {
+func GetASGInstanceIDs(asgName string, as *autoscaling.AutoScaling) (ids []*string, err error) {
 	params := &autoscaling.DescribeAutoScalingGroupsInput{
 		AutoScalingGroupNames: []*string{
 			aws.String(conf.ASGName),
@@ -86,26 +163,14 @@ func GetASGInstanceIDs(asgName string, as *autoscaling.AutoScaling) (ids []*stri
 	resp, err := as.DescribeAutoScalingGroups(params)
 
 	if err != nil {
-		fmt.Println(err.Error())
-		log.WithFields(log.Fields{
-			"asg-name": conf.ASGName,
-			"error":    err,
-		}).Fatal("Failed to describe auto scaling group")
-	}
-
-	log.WithFields(log.Fields{
-		"asg-name": conf.ASGName,
-		"value":    fmt.Sprintf("%+v", resp),
-	}).Debug("Described ASG")
-
-	if len(resp.AutoScalingGroups) == 0 {
-		log.WithFields(log.Fields{
-			"asg-name": conf.ASGName,
-			"error":    "Unknown autoscaling group",
-		}).Fatal("Failed to describe auto scaling group")
+		return
 	}
 
 	instances := resp.AutoScalingGroups[0].Instances
+	log.WithFields(log.Fields{
+		"asg-name":  conf.ASGName,
+		"instances": fmt.Sprintf("%v", instances),
+	}).Debug("Described ASG")
 
 	ids = make([]*string, len(instances))
 	for n, instance := range resp.AutoScalingGroups[0].Instances {
@@ -115,6 +180,27 @@ func GetASGInstanceIDs(asgName string, as *autoscaling.AutoScaling) (ids []*stri
 		}).Debug("Found instance id")
 		ids[n] = instance.InstanceId
 	}
+	return
+}
 
+// GetInstances takes the instance IDs and returns the instnace data
+func GetInstances(ec2client *ec2.EC2, instanceIDs []*string) (*ec2.DescribeInstancesOutput, error) {
+	params := &ec2.DescribeInstancesInput{
+		InstanceIds: instanceIDs,
+	}
+
+	instances, err := ec2client.DescribeInstances(params)
+	return instances, err
+}
+
+// RestartHAProxy does the HAproxy restart
+func RestartHAProxy(systemd bool) (err error) {
+	if systemd {
+		cmd := exec.Command("systemctl", "haproxy", "reload")
+		err = cmd.Run()
+	} else {
+		cmd := exec.Command("service", "haproxy", "reload")
+		err = cmd.Run()
+	}
 	return
 }

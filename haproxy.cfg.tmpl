@@ -1,0 +1,23 @@
+global
+	daemon
+	maxconn 256
+
+defaults
+	mode http
+	timeout connect 5s
+	timeout client 60s
+	timeout server 5s
+
+frontend http-in
+	bind *:80
+	default_backend servers
+
+frontend ssl-in
+	bind *:443 ssl crt {{ .SSLCert }}
+	default_backend {{ .ASGName }}
+
+backend {{ .ASGName }}
+	option httpchk OPTIONS / HTTP/1.0
+{{- range .Instances }}
+	server {{ .InstanceId }} {{ .PrivateIpAddress }}:80 check
+{{- end }}
