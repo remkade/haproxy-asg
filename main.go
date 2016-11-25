@@ -64,7 +64,8 @@ func init() {
 }
 
 func main() {
-	sess, err := session.NewSession()
+	log.Info("haproxy-asg starting up")
+	sess, err := session.NewSession(&aws.Config{Region: aws.String(conf.Region)})
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
@@ -96,6 +97,9 @@ func main() {
 	signal.Notify(ControlChannel, os.Interrupt, syscall.SIGTERM)
 	oldInstances := make([]string, 0)
 
+	log.WithFields(log.Fields{
+		"polling_interval": conf.PollInterval,
+	}).Debug("Starting main loop")
 	// Start the loop
 	for {
 		select {
@@ -103,84 +107,52 @@ func main() {
 		case <-ControlChannel:
 			return
 		case <-LoopTimer:
-			instanceIDs, err := GetASGInstanceIDs(conf.ASGName, as)
+			oldInstances, err = Work(&conf, as, ec2client, tmpl, oldInstances)
 			if err != nil {
 				log.WithFields(log.Fields{
 					"error": err,
-				}).Fatal("Failed to describe instances")
+				}).Error("Failed to describe instances")
 			}
-
-			if len(instanceIDs) == 0 {
-				log.WithFields(log.Fields{
-					"asg-name": conf.ASGName,
-				}).Warn("Empty list of instances from ASG!")
-			} else {
-				instances, err := GetInstances(ec2client, instanceIDs)
-				if err != nil {
-					log.WithFields(log.Fields{
-						"error": err,
-					}).Fatal("Failed to describe instances")
-				}
-
-				// Create template data structure
-				td := NewTemplateDataFromEC2Response(conf.ASGName, conf.SSLCert, instances)
-
-				// Write out template
-				if SliceEqual(td.InstanceIDs(), oldInstances) {
-					log.Info("No changes found in instances, doing nothing")
-				} else {
-					err = td.Write(tmpl, conf.OutputFile)
-					if err != nil {
-						log.WithFields(log.Fields{
-							"error": err,
-						}).Fatal("Unable to write output file")
-					}
-
-					// Restart Haproxy
-					err = RestartHAProxy(conf.Systemd)
-					if err != nil {
-						log.WithFields(log.Fields{
-							"error": err,
-						}).Fatal("Unable to restart haproxy")
-					}
-					oldInstances = td.InstanceIDs()
-				}
-			}
-		default:
 		}
 	}
 }
 
 // GetASGInstanceIDs queries the AutoScalingGroup for the instances
 // returning only the Instance IDs
-func GetASGInstanceIDs(asgName string, as *autoscaling.AutoScaling) (ids []*string, err error) {
+func GetASGInstanceIDs(asgName string, as *autoscaling.AutoScaling) ([]*string, error) {
+	log.WithFields(log.Fields{
+		"asg-name": asgName,
+	}).Debug("Getting ASG Instance IDs")
+
 	params := &autoscaling.DescribeAutoScalingGroupsInput{
 		AutoScalingGroupNames: []*string{
-			aws.String(conf.ASGName),
+			aws.String(asgName),
 		},
 		MaxRecords: aws.Int64(100),
 	}
+
 	resp, err := as.DescribeAutoScalingGroups(params)
 
 	if err != nil {
-		return
+		return []*string{}, err
 	}
 
 	instances := resp.AutoScalingGroups[0].Instances
+
 	log.WithFields(log.Fields{
-		"asg-name":  conf.ASGName,
+		"asg-name":  asgName,
 		"instances": fmt.Sprintf("%v", instances),
 	}).Debug("Described ASG")
 
-	ids = make([]*string, len(instances))
+	ids := make([]*string, len(instances))
 	for n, instance := range resp.AutoScalingGroups[0].Instances {
 		log.WithFields(log.Fields{
-			"asg-name":    conf.ASGName,
+			"asg-name":    asgName,
 			"instance-id": *instance.InstanceId,
 		}).Debug("Found instance id")
 		ids[n] = instance.InstanceId
 	}
-	return
+	return ids, nil
 }
 
 // GetInstances takes the instance IDs and returns the instnace data
