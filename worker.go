@@ -37,6 +37,7 @@ func Work(conf *config, as *autoscaling.AutoScaling, ec2client *ec2.EC2, tmpl *t
 		}
 
 		// Restart Haproxy
+		log.Info("Restarting HAProxy")
 		err = RestartHAProxy(conf.Systemd)
 		if err != nil {
 			return []string{}, fmt.Errorf("Unable to restart haproxy: %s", err)

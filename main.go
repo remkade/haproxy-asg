@@ -98,6 +98,17 @@ func main() {
 	oldInstances := make([]string, 0)
 
 	log.WithFields(log.Fields{
+		"asg_name": conf.ASGName,
+	}).Debug("Starting initial pull")
+
+	oldInstances, err = Work(&conf, as, ec2client, tmpl, oldInstances)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"error": err,
+		}).Fatal("Error on initial sync!")
+	}
+
+	log.WithFields(log.Fields{
 		"polling_interval": conf.PollInterval,
 	}).Debug("Starting main loop")
 	// Start the loop
@@ -111,7 +122,7 @@ func main() {
 			if err != nil {
 				log.WithFields(log.Fields{
 					"error": err,
-				}).Error("Failed to describe instances")
+				}).Error("Error!")
 			}
 		}
 	}
