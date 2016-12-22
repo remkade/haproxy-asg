@@ -30,6 +30,8 @@ type config struct {
 }
 
 var conf config
+var Version = "0.1.0"
+var VersionString = "🐼"
 
 func init() {
 	flag.StringVar(&conf.ASGName, "asg-name", "", "The autoscaling group's name")
@@ -64,7 +66,10 @@ func init() {
 }
 
 func main() {
-	log.Info("haproxy-asg starting up")
+	log.WithFields(log.Fields{
+		"version":        Version,
+		"version_string": VersionString,
+	}).Info("haproxy-asg starting up")
 	sess, err := session.NewSession(&aws.Config{Region: aws.String(conf.Region)})
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -179,7 +184,7 @@ func GetInstances(ec2client *ec2.EC2, instanceIDs []*string) (*ec2.DescribeInsta
 // RestartHAProxy does the HAproxy restart
 func RestartHAProxy(systemd bool) (err error) {
 	if systemd {
-		cmd := exec.Command("systemctl", "haproxy", "reload")
+		cmd := exec.Command("systemctl", "reload", "haproxy")
 		err = cmd.Run()
 	} else {
 		cmd := exec.Command("service", "haproxy", "reload")

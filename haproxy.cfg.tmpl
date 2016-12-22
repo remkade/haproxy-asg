@@ -18,7 +18,7 @@ defaults
 
 frontend inbound
 	bind *:80
-	bind *:443 ssl crt {{ .SSLCert }} /etc/haproxy/certs.d
+	bind *:443 ssl crt {{ .SSLCert }}
 	default_backend {{ .ASGName }}
 	reqadd X-Forwarded-Proto:\ https if { ssl_fc }
 
