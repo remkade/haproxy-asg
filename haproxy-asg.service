@@ -1,0 +1,11 @@
+[Unit]
+Description=HAProxy Autoscaling Group Templater
+After=syslog.target network.target
+
+[Service]
+Type=simple
+Environment="ASG_NAME=asgname" "CERT_PATH=certpath"
+ExecStart=/usr/local/bin/haproxy-asg --asg-name $ASG_NAME --log-level info --systemd --template /etc/haproxy-asg/haproxy.cfg.tmpl --ssl-cert $CERT_PATH
+
+[Install]
+WantedBy=multi-user.target
