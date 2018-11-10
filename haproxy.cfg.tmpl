@@ -2,6 +2,7 @@ global
 	daemon
 	maxconn 2048
 	log /dev/log local0
+	stats socket /var/run/haproxy/stats.sock
 
 	# Mozilla's recommended SSL settings "Intermediate"
 	tune.ssl.default-dh-param 2048
@@ -14,16 +15,29 @@ defaults
 	mode http
 	timeout connect 5s
 	timeout client 60s
-	timeout server 5s
+	timeout server 60s
+	log-format {"type":"haproxy","timestamp":%Ts,"http_status":%ST,"http_request":"%r","remote_addr":"%ci","bytes_read":%B,"upstream_addr":"%si","backend_name":"%b","retries":%rc,"bytes_uploaded":%U,"upstream_response_time":"%Tr","upstream_connect_time":"%Tc","session_duration":"%Tt","termination_state":"%ts"}
 
 frontend inbound
 	bind *:80
-	bind *:443 ssl crt {{ .SSLCert }} /etc/haproxy/certs.d
+	bind *:443 ssl crt {{ .SSLCert }} alpn h2,http/1.1
+	stats enable
+	stats hide-version
+	stats refresh 30s
+	stats show-node
+	stats auth kyle:buggeroff
+	stats uri /haproxy?stats
 	default_backend {{ .ASGName }}
 	reqadd X-Forwarded-Proto:\ https if { ssl_fc }
+	redirect scheme https code 301 if !{ ssl_fc }
+	acl letsencrypt-acl path_beg /.well-known/acme-challenge/
+	use_backend letsencrypt-backend if letsencrypt-acl
 
 backend {{ .ASGName }}
-	option httpchk OPTIONS / HTTP/1.0
+	option httpchk GET /wp-content/index.php HTTP/1.0
 {{- range .Instances }}
 	server {{ .InstanceId }} {{ .PrivateIpAddress }}:80 check
 {{- end }}
+
+backend letsencrypt-backend
+	server letsencrypt 127.0.0.1:8888
