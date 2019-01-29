@@ -141,10 +141,8 @@ func GetASGInstanceIDs(asgName string, as *autoscaling.AutoScaling) ([]*string, 
 	}).Debug("Getting ASG Instance IDs")
 
 	params := &autoscaling.DescribeAutoScalingGroupsInput{
-		AutoScalingGroupNames: []*string{
-			aws.String(asgName),
-		},
-		MaxRecords: aws.Int64(100),
+		AutoScalingGroupNames: StringToAWSStringSlice(asgName),
+		MaxRecords:            aws.Int64(100),
 	}
 
 	resp, err := as.DescribeAutoScalingGroups(params)
@@ -153,17 +151,21 @@ func GetASGInstanceIDs(asgName string, as *autoscaling.AutoScaling) ([]*string, 
 		return []*string{}, err
 	}
 
-	instances := resp.AutoScalingGroups[0].Instances
+	instances := make([]*autoscaling.Instance, 1)
+
+	for _, asg := range resp.AutoScalingGroups {
+		instances = append(instances, asg.Instances...)
+	}
 
 	log.WithFields(log.Fields{
-		"asg-name":  asgName,
+		"asg-names": asgName,
 		"instances": fmt.Sprintf("%v", instances),
 	}).Debug("Described ASG")
 
 	ids := make([]*string, len(instances))
-	for n, instance := range resp.AutoScalingGroups[0].Instances {
+	for n, instance := range instances {
 		log.WithFields(log.Fields{
-			"asg-name":    asgName,
+			"asg-names":   asgName,
 			"instance-id": *instance.InstanceId,
 		}).Debug("Found instance id")
 		ids[n] = instance.InstanceId
