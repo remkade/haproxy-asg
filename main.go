@@ -30,8 +30,8 @@ type config struct {
 }
 
 var conf config
-var Version = "0.1.0"
-var VersionString = "🐼"
+var Version = "1.0.0"
+var VersionString = "🐡"
 
 func init() {
 	flag.StringVar(&conf.ASGName, "asg-name", "", "The autoscaling group's name")
