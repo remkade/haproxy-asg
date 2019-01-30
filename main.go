@@ -151,7 +151,7 @@ func GetASGInstanceIDs(asgName string, as *autoscaling.AutoScaling) ([]*string, 
 		return []*string{}, err
 	}
 
-	instances := make([]*autoscaling.Instance, 1)
+	instances := make([]*autoscaling.Instance, 0)
 
 	for _, asg := range resp.AutoScalingGroups {
 		instances = append(instances, asg.Instances...)
